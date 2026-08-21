@@ -1,4 +1,5 @@
 import traceback
+import uuid
 from app.database import SessionLocal
 from app.models import Meeting, TranscriptSegment, ActionItem, MeetingDecision
 from app.services.asr.whisper_service import asr_service
@@ -67,14 +68,24 @@ def process_meeting_pipeline(meeting_id: str):
             f"[{s['speaker']}] {s['text']}" for s in diarized_segments
         ])
         
+        # Save segments and assign persistent DB UUIDs
+        saved_db_segments = []
         for s in diarized_segments:
-            db.add(TranscriptSegment(
+            segment_uuid = str(uuid.uuid4())
+            db_segment = TranscriptSegment(
+                id=segment_uuid,
                 meeting_id=meeting.id,
                 speaker=s["speaker"],
                 start_time=s["start_time"],
                 end_time=s["end_time"],
                 text=s["text"]
-            ))
+            )
+            db.add(db_segment)
+            # Retain DB UUID for grounding linker
+            s_with_db_id = dict(s)
+            s_with_db_id["id"] = segment_uuid
+            saved_db_segments.append(s_with_db_id)
+
         db.commit()
 
         # 2. Map-Reduce Summarization
@@ -82,7 +93,7 @@ def process_meeting_pipeline(meeting_id: str):
         db.commit()
 
         llm = GeminiProvider()
-        summary, decisions, raw_actions = run_map_reduce_extraction(llm, diarized_segments)
+        summary, decisions, raw_actions = run_map_reduce_extraction(llm, saved_db_segments)
         
         meeting.summary = summary
         
@@ -92,12 +103,13 @@ def process_meeting_pipeline(meeting_id: str):
                 db.add(MeetingDecision(meeting_id=meeting.id, decision_text=dec_text))
         db.commit()
 
-        # 3. Grounding Verification
-        verified_actions = grounding_verifier.verify_action_items(raw_actions, diarized_segments)
+        # 3. Grounding Verification (linked with actual DB segment UUIDs)
+        verified_actions = grounding_verifier.verify_action_items(raw_actions, saved_db_segments)
         
         for act in verified_actions:
             db.add(ActionItem(
                 meeting_id=meeting.id,
+                matched_segment_id=act.get("matched_segment_id"),
                 task=act.get("task", ""),
                 owner=act.get("owner", "Unassigned"),
                 due_date=act.get("due_date", "None"),
@@ -109,7 +121,7 @@ def process_meeting_pipeline(meeting_id: str):
         meeting.status = "completed"
         meeting.error_message = None
         db.commit()
-        print(f"[Pipeline] Meeting {meeting_id} completed successfully.")
+        print(f"[Pipeline] Meeting {meeting_id} completed successfully with segment grounding links.")
 
     except Exception as e:
         db.rollback()

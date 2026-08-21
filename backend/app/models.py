@@ -35,6 +35,7 @@ class TranscriptSegment(Base):
     text = Column(Text, nullable=False)
 
     meeting = relationship("Meeting", back_populates="segments")
+    action_items = relationship("ActionItem", back_populates="matched_segment")
 
 
 class ActionItem(Base):
@@ -42,6 +43,7 @@ class ActionItem(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     meeting_id = Column(String, ForeignKey("meetings.id"), nullable=False, index=True)
+    matched_segment_id = Column(String, ForeignKey("transcript_segments.id"), nullable=True, index=True)
     task = Column(Text, nullable=False)
     owner = Column(String, default="Unassigned")
     due_date = Column(String, default="None")
@@ -50,6 +52,7 @@ class ActionItem(Base):
     grounding_score = Column(Float, default=0.0)
 
     meeting = relationship("Meeting", back_populates="action_items")
+    matched_segment = relationship("TranscriptSegment", back_populates="action_items")
 
 
 class MeetingDecision(Base):

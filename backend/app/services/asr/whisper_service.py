@@ -98,7 +98,6 @@ class WhisperASRService:
 
         speaker_overlaps = {}
         for turn in speaker_turns:
-            # Calculate overlap interval [max(starts), min(ends)]
             overlap_start = max(seg_start, turn["start"])
             overlap_end = min(seg_end, turn["end"])
             overlap_duration = max(0.0, overlap_end - overlap_start)
@@ -108,13 +107,11 @@ class WhisperASRService:
                 speaker_overlaps[speaker] = speaker_overlaps.get(speaker, 0.0) + overlap_duration
 
         if speaker_overlaps:
-            # Pick speaker with largest temporal overlap
             best_speaker = max(speaker_overlaps, key=speaker_overlaps.get)
             num_part = "".join(filter(str.isdigit, best_speaker))
             speaker_idx = int(num_part) + 1 if num_part else 1
             return f"Speaker {speaker_idx}"
 
-        # Fallback to closest acoustic boundary if segment sits in a silence gap
         closest_turn = min(speaker_turns, key=lambda t: min(abs(t["start"] - seg_start), abs(t["end"] - seg_end)))
         num_part = "".join(filter(str.isdigit, closest_turn["speaker"]))
         speaker_idx = int(num_part) + 1 if num_part else 1
