@@ -1,47 +1,40 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional
 from datetime import datetime
+from pydantic import BaseModel, ConfigDict
 
-class SpeakerSegment(BaseModel):
-    speaker: str = "Unknown"
-    start: float
-    end: float
+class SegmentResponse(BaseModel):
+    id: str
+    speaker: str
+    start_time: float
+    end_time: float
     text: str
+    model_config = ConfigDict(from_attributes=True)
 
-class ActionItemCandidate(BaseModel):
-    task: str = Field(..., description="Actionable task to be done")
-    owner: str = Field(default="Unassigned", description="Name or Speaker ID responsible")
-    due_date: Optional[str] = Field(default=None, description="Due date or timeframe if mentioned")
-    source_quote: str = Field(..., description="Verbatim transcript sentence grounding this item")
+class ActionItemResponse(BaseModel):
+    id: str
+    task: str
+    owner: str
+    due_date: str
+    source_quote: str | None = None
+    is_grounded: bool = False
+    grounding_score: float = 0.0
+    model_config = ConfigDict(from_attributes=True)
 
-class ChunkExtractionResult(BaseModel):
-    summary_points: List[str] = []
-    decisions: List[str] = []
-    action_items: List[ActionItemCandidate] = []
-
-class FinalMeetingSummary(BaseModel):
-    summary: str
-    decisions: List[str]
-    action_items: List[ActionItemCandidate]
+class DecisionResponse(BaseModel):
+    id: str
+    decision_text: str
+    model_config = ConfigDict(from_attributes=True)
 
 class MeetingResponse(BaseModel):
     id: str
-    filename: str
+    title: str
     status: str
-    error_message: Optional[str] = None
-    raw_transcript: Optional[str] = None
-    diarized_segments: Optional[List[SpeakerSegment]] = None
-    summary: Optional[str] = None
-    decisions: Optional[List[str]] = None
-    action_items: Optional[List[ActionItemCandidate]] = None
+    summary: str | None = None
+    raw_transcript: str | None = None
+    error_message: str | None = None
     created_at: datetime
     updated_at: datetime
+    segments: list[SegmentResponse] = []
+    action_items: list[ActionItemResponse] = []
+    decisions: list[DecisionResponse] = []
 
-    class Config:
-        from_attributes = True
-
-class MeetingUploadResponse(BaseModel):
-    id: str
-    filename: str
-    status: str
-    message: str
+    model_config = ConfigDict(from_attributes=True)

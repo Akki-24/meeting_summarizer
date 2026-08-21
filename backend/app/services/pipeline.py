@@ -1,101 +1,127 @@
 import traceback
-from sqlalchemy.orm import Session
-from app.models import Meeting
-from app.schemas import ActionItemCandidate
+from app.database import SessionLocal
+from app.models import Meeting, TranscriptSegment, ActionItem, MeetingDecision
 from app.services.asr.whisper_service import asr_service
-from app.services.llm import get_llm_provider
-from app.services.grounding import grounding_filter
-from app.prompts import CHUNK_EXTRACTION_SYSTEM_PROMPT, FINAL_MERGE_SYSTEM_PROMPT
+from app.services.llm.gemini_provider import GeminiProvider
+from app.services.grounding import grounding_verifier
+from app.prompts import CHUNK_EXTRACTION_PROMPT, FINAL_SYNTHESIS_PROMPT
 
-def split_transcript_into_chunks(diarized_segments: list, max_words: int = 800) -> list:
-    """Groups diarized segments into context-bounded text chunks."""
-    chunks = []
-    current_chunk = []
-    current_word_count = 0
+def run_map_reduce_extraction(llm_provider: GeminiProvider, diarized_segments: list[dict]) -> tuple[str, list[str], list[dict]]:
+    """Runs 2-Stage Map-Reduce extraction on transcript segments."""
+    chunk_size = 15
+    chunks = [diarized_segments[i:i + chunk_size] for i in range(0, len(diarized_segments), chunk_size)]
+    
+    chunk_summaries = []
+    chunk_decisions = []
+    all_candidate_actions = []
 
-    for seg in diarized_segments:
-        text = f"[{seg['speaker']}]: {seg['text']}"
-        word_count = len(text.split())
+    for idx, chunk in enumerate(chunks):
+        formatted_chunk = "\n".join([
+            f"[{s.get('speaker', 'Speaker')} | {s.get('start_time', 0.0)}s - {s.get('end_time', 0.0)}s]: {s.get('text', '')}"
+            for s in chunk
+        ])
         
-        if current_word_count + word_count > max_words and current_chunk:
-            chunks.append("\n".join(current_chunk))
-            current_chunk = [text]
-            current_word_count = word_count
-        else:
-            current_chunk.append(text)
-            current_word_count += word_count
+        user_prompt = f"Analyze Meeting Chunk {idx + 1}/{len(chunks)}:\n\n{formatted_chunk}"
+        chunk_data = llm_provider.generate_json(CHUNK_EXTRACTION_PROMPT, user_prompt)
+        
+        chunk_summaries.extend(chunk_data.get("key_points", []))
+        chunk_decisions.extend(chunk_data.get("decisions", []))
+        
+        for item in chunk_data.get("action_items", []):
+            all_candidate_actions.append({
+                "task": item.get("task", ""),
+                "owner": item.get("owner", "Unassigned"),
+                "due_date": item.get("due_date", "None"),
+                "source_quote": item.get("source_quote", "")
+            })
 
-    if current_chunk:
-        chunks.append("\n".join(current_chunk))
-    return chunks
+    # Reduce Stage
+    synthesis_input = (
+        "Candidate Points:\n" + "\n".join([f"- {p}" for p in chunk_summaries]) + "\n\n"
+        "Candidate Decisions:\n" + "\n".join([f"- {d}" for d in chunk_decisions])
+    )
+    
+    final_output = llm_provider.generate_json(FINAL_SYNTHESIS_PROMPT, synthesis_input)
+    executive_summary = final_output.get("executive_summary", "Summary generation completed.")
+    final_decisions = final_output.get("decisions", chunk_decisions)
 
-def process_meeting_pipeline(meeting_id: str, db_session_factory):
-    """Background worker task to orchestrate transcription, extraction, grounding, and storage."""
-    db: Session = db_session_factory()
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        db.close()
-        return
+    return executive_summary, final_decisions, all_candidate_actions
 
+def process_meeting_pipeline(meeting_id: str):
+    """Safe background pipeline execution with local session management."""
+    db = SessionLocal()
     try:
-        # 1. ASR Transcription
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+        if not meeting:
+            return
+
+        # 1. Transcribe & Diarize
         meeting.status = "transcribing"
         db.commit()
 
-        raw_transcript, diarized_segments = asr_service.transcribe(meeting.audio_path)
-        meeting.raw_transcript = raw_transcript
-        meeting.diarized_segments = diarized_segments
+        diarized_segments = asr_service.transcribe(meeting.file_path)
+        if not diarized_segments:
+            raise ValueError("ASR transcription yielded no audio segments.")
+
+        meeting.raw_transcript = "\n".join([
+            f"[{s['speaker']}] {s['text']}" for s in diarized_segments
+        ])
         
-        # 2. Chunking
-        chunks = split_transcript_into_chunks(diarized_segments, max_words=800)
-        
-        # 3. LLM Extraction & Grounding Verification
+        for s in diarized_segments:
+            db.add(TranscriptSegment(
+                meeting_id=meeting.id,
+                speaker=s["speaker"],
+                start_time=s["start_time"],
+                end_time=s["end_time"],
+                text=s["text"]
+            ))
+        db.commit()
+
+        # 2. Map-Reduce Summarization
         meeting.status = "summarizing"
         db.commit()
 
-        llm = get_llm_provider()
-        accumulated_summary_points = []
-        accumulated_decisions = []
-        accumulated_action_items = []
-
-        for chunk_text in chunks:
-            extracted_json = llm.generate_json(
-                system_prompt=CHUNK_EXTRACTION_SYSTEM_PROMPT,
-                user_content=chunk_text
-            )
-            
-            accumulated_summary_points.extend(extracted_json.get("summary_points", []))
-            accumulated_decisions.extend(extracted_json.get("decisions", []))
-            
-            raw_action_items = [
-                ActionItemCandidate(**item) for item in extracted_json.get("action_items", [])
-            ]
-            verified = grounding_filter.verify_action_items(raw_action_items, raw_transcript)
-            accumulated_action_items.extend(verified)
-
-        # 4. Final Consolidation & Merge
-        merge_payload = (
-            f"Summary Points:\n" + "\n".join(f"- {p}" for p in accumulated_summary_points) +
-            f"\n\nDecisions:\n" + "\n".join(f"- {d}" for d in accumulated_decisions) +
-            f"\n\nAction Items:\n" + "\n".join(f"- [{a.owner}] {a.task} (Quote: {a.source_quote})" for a in accumulated_action_items)
-        )
-
-        final_json = llm.generate_json(
-            system_prompt=FINAL_MERGE_SYSTEM_PROMPT,
-            user_content=merge_payload
-        )
-
-        # 5. Persist Results
-        meeting.summary = final_json.get("summary", "")
-        meeting.decisions = final_json.get("decisions", accumulated_decisions)
-        meeting.action_items = [item.model_dump() if hasattr(item, "model_dump") else item for item in accumulated_action_items]
-        meeting.status = "done"
+        llm = GeminiProvider()
+        summary, decisions, raw_actions = run_map_reduce_extraction(llm, diarized_segments)
+        
+        meeting.summary = summary
+        
+        for dec in decisions:
+            dec_text = dec if isinstance(dec, str) else dec.get("decision", "")
+            if dec_text:
+                db.add(MeetingDecision(meeting_id=meeting.id, decision_text=dec_text))
         db.commit()
+
+        # 3. Grounding Verification
+        verified_actions = grounding_verifier.verify_action_items(raw_actions, diarized_segments)
+        
+        for act in verified_actions:
+            db.add(ActionItem(
+                meeting_id=meeting.id,
+                task=act.get("task", ""),
+                owner=act.get("owner", "Unassigned"),
+                due_date=act.get("due_date", "None"),
+                source_quote=act.get("source_quote", ""),
+                is_grounded=act.get("is_grounded", False),
+                grounding_score=act.get("grounding_score", 0.0)
+            ))
+
+        meeting.status = "completed"
+        meeting.error_message = None
+        db.commit()
+        print(f"[Pipeline] Meeting {meeting_id} completed successfully.")
 
     except Exception as e:
         db.rollback()
-        meeting.status = "failed"
-        meeting.error_message = f"{str(e)}\n{traceback.format_exc()}"
-        db.commit()
+        error_msg = traceback.format_exc()
+        print(f"[Pipeline Error] Meeting {meeting_id} failed:\n{error_msg}")
+        try:
+            meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+            if meeting:
+                meeting.status = "failed"
+                meeting.error_message = str(e)
+                db.commit()
+        except Exception:
+            pass
     finally:
         db.close()

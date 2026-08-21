@@ -2,16 +2,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.database import Base, engine, SessionLocal
-from app.models import Meeting
+from app.database import engine, SessionLocal
+from app.models import Base, Meeting
 from app.routers import meetings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Ensure all database tables exist
+    # 1. Create all relational tables (Meeting, TranscriptSegment, ActionItem, MeetingDecision)
     Base.metadata.create_all(bind=engine)
     
-    # 2. Reset any stale/orphaned tasks left from a previous crash or Ctrl+C
+    # 2. Reset stale tasks if the server was restarted mid-run
     db = SessionLocal()
     try:
         stale_count = db.query(Meeting).filter(
@@ -36,7 +36,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

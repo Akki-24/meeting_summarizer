@@ -1,24 +1,23 @@
-# Environments & Cache
-__pycache__/
-*.py[cod]
-*$py.class
+# Virtual Environment & Python cache
 .venv/
 venv/
-env/
-.env
+__pycache__/
+*.pyc
 
-# Storage & Uploads
-backend/uploads/*
-!backend/uploads/.gitkeep
-backend/chroma_db/
+# Local Data, SQLite & Chroma DBs
 *.db
-*.sqlite3
+meetings.db
+chroma_db/
+uploads/
+*.wav
+*.mp4
+*.mp3
 
-# Node / Frontend
+# Environment keys
+.env
+.env.local
+
+# Node / Vite dependencies & build artifacts
 node_modules/
 dist/
-.vite/
-
-# OS files
 .DS_Store
-Thumbs.db

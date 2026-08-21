@@ -21,12 +21,15 @@ class GeminiProvider(BaseLLMProvider):
             f"Input:\n{user_content}"
         )
         
-        # Candidate models to try in order if one is overloaded (503)
-        candidate_models = [self.model_name, "gemini-2.5-flash", "gemini-3.5-flash"]
+        # Valid production Gemini models in order of preference
+        candidate_models = [self.model_name, "gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
+        # Deduplicate while preserving order
+        unique_models = list(dict.fromkeys(candidate_models))
+        
         response = None
         last_error = None
 
-        for model in candidate_models:
+        for model in unique_models:
             for attempt in range(3):
                 try:
                     response = self.client.models.generate_content(
@@ -40,18 +43,18 @@ class GeminiProvider(BaseLLMProvider):
                     break
                 except Exception as e:
                     last_error = e
-                    print(f"[GeminiProvider] {model} attempt {attempt + 1} hit error: {e}. Retrying...")
-                    time.sleep(2.0 * (attempt + 1))
+                    print(f"[GeminiProvider] Model '{model}' attempt {attempt + 1} failed: {e}. Retrying...")
+                    time.sleep(1.5 * (attempt + 1))
             
             if response is not None:
                 break
 
         if response is None:
-            raise ValueError(f"All Gemini model attempts failed. Last error: {last_error}")
+            raise ValueError(f"All Gemini fallback models failed. Last error: {last_error}")
 
         text = response.text.strip()
         
-        # Clean markdown wrappers defensively
+        # Strip markdown codeblocks if present
         if text.startswith("```json"):
             text = text[7:]
         elif text.startswith("```"):

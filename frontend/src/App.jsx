@@ -37,13 +37,15 @@ export default function App() {
     }
   };
 
+  const isFinished = (status) => {
+    const s = (status || "").toLowerCase();
+    return s === "completed" || s === "done" || s === "failed";
+  };
+
   // Polling loop when meeting is actively processing
   useEffect(() => {
     if (!currentMeetingId) return;
-    if (
-      meetingData &&
-      (meetingData.status === "done" || meetingData.status === "failed")
-    ) {
+    if (meetingData && isFinished(meetingData.status)) {
       return;
     }
 
@@ -51,7 +53,7 @@ export default function App() {
       try {
         const data = await getMeeting(currentMeetingId);
         setMeetingData(data);
-        if (data.status === "done" || data.status === "failed") {
+        if (isFinished(data.status)) {
           clearInterval(interval);
           fetchHistory();
         }
@@ -62,6 +64,7 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, [currentMeetingId, meetingData?.status]);
+
   const handleUpload = async (e) => {
     e.preventDefault();
     if (!file) return;
@@ -70,7 +73,11 @@ export default function App() {
     try {
       const res = await uploadMeetingAudio(file);
       setCurrentMeetingId(res.id);
-      setMeetingData({ id: res.id, filename: res.filename, status: "pending" });
+      setMeetingData({
+        id: res.id,
+        title: res.title || file.name,
+        status: "pending",
+      });
     } catch (err) {
       alert("Upload failed: " + (err.response?.data?.detail || err.message));
     } finally {
@@ -79,7 +86,8 @@ export default function App() {
   };
 
   const getStatusBadge = (status) => {
-    switch (status) {
+    const s = (status || "").toLowerCase();
+    switch (s) {
       case "pending":
         return (
           <span className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full text-xs font-semibold">
@@ -100,6 +108,7 @@ export default function App() {
             Insights
           </span>
         );
+      case "completed":
       case "done":
         return (
           <span className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-semibold">
@@ -116,6 +125,10 @@ export default function App() {
         return null;
     }
   };
+
+  const currentStatus = (meetingData?.status || "").toLowerCase();
+  const transcriptList =
+    meetingData?.segments || meetingData?.diarized_segments || [];
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
@@ -208,7 +221,7 @@ export default function App() {
                     }`}>
                     <div className="flex items-center justify-between w-full">
                       <span className="font-semibold text-slate-200 truncate">
-                        {m.filename}
+                        {m.title || m.filename}
                       </span>
                       {getStatusBadge(m.status)}
                     </div>
@@ -241,7 +254,7 @@ export default function App() {
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                    {meetingData.filename}
+                    {meetingData.title || meetingData.filename}
                   </h2>
                   <p className="text-xs text-slate-400 font-mono mt-0.5">
                     ID: {meetingData.id}
@@ -251,22 +264,21 @@ export default function App() {
               </div>
 
               {/* In-Progress Notification */}
-              {meetingData.status !== "done" &&
-                meetingData.status !== "failed" && (
-                  <div className="p-6 bg-slate-900 border border-slate-800 rounded-xl text-center">
-                    <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin mx-auto mb-3" />
-                    <p className="text-sm font-semibold text-slate-200">
-                      Processing Audio Pipeline
-                    </p>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Whisper is transcribing and verifying grounding against
-                      the transcript...
-                    </p>
-                  </div>
-                )}
+              {!isFinished(currentStatus) && (
+                <div className="p-6 bg-slate-900 border border-slate-800 rounded-xl text-center">
+                  <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin mx-auto mb-3" />
+                  <p className="text-sm font-semibold text-slate-200">
+                    Processing Audio Pipeline
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Whisper is transcribing and verifying grounding against the
+                    transcript...
+                  </p>
+                </div>
+              )}
 
               {/* Error Banner */}
-              {meetingData.status === "failed" && (
+              {currentStatus === "failed" && (
                 <div className="p-6 bg-red-950/30 border border-red-500/30 rounded-xl">
                   <div className="flex items-center gap-2 text-red-400 font-bold mb-2">
                     <AlertCircle className="w-5 h-5" /> Processing Failed
@@ -279,7 +291,7 @@ export default function App() {
               )}
 
               {/* Complete Insights View */}
-              {meetingData.status === "done" && (
+              {(currentStatus === "completed" || currentStatus === "done") && (
                 <div className="space-y-6">
                   {/* Executive Summary */}
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
@@ -302,8 +314,8 @@ export default function App() {
                           <li
                             key={i}
                             className="flex items-start gap-2.5 text-sm text-slate-300 bg-slate-950/60 p-3 rounded-lg border border-slate-800/80">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-2"></span>
-                            <span>{dec}</span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-2 shrink-0"></span>
+                            <span>{dec.decision_text || dec}</span>
                           </li>
                         ))}
                       </ul>
@@ -319,7 +331,7 @@ export default function App() {
                           Items
                         </h3>
                         <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />{" "}
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                           Fuzzy Grounding Verified
                         </span>
                       </div>
@@ -332,7 +344,7 @@ export default function App() {
                               <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
                                 {item.owner || "Unassigned"}
                               </span>
-                              {item.due_date && (
+                              {item.due_date && item.due_date !== "None" && (
                                 <span className="text-xs text-amber-400 font-medium">
                                   Due: {item.due_date}
                                 </span>
@@ -344,7 +356,11 @@ export default function App() {
                             {item.source_quote && (
                               <button
                                 onClick={() =>
-                                  setSelectedQuote(item.source_quote)
+                                  setSelectedQuote(
+                                    selectedQuote === item.source_quote
+                                      ? null
+                                      : item.source_quote,
+                                  )
                                 }
                                 className="w-full text-left flex items-start gap-2 text-xs text-slate-400 bg-slate-900/90 p-2.5 rounded border border-slate-800/80 hover:border-indigo-500/40 transition cursor-pointer">
                                 <MessageSquareQuote className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
@@ -369,18 +385,19 @@ export default function App() {
                       Transcript & Diarization
                     </h3>
                     <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
-                      {meetingData.diarized_segments?.map((seg, i) => {
+                      {transcriptList.map((seg, i) => {
+                        const segText = seg.text || "";
                         const isHighlighted =
                           selectedQuote &&
-                          (seg.text
+                          (segText
                             .toLowerCase()
                             .includes(selectedQuote.toLowerCase()) ||
                             selectedQuote
                               .toLowerCase()
-                              .includes(seg.text.toLowerCase()));
+                              .includes(segText.toLowerCase()));
                         return (
                           <div
-                            key={i}
+                            key={seg.id || i}
                             className={`p-3 rounded-lg border transition ${
                               isHighlighted
                                 ? "bg-amber-500/10 border-amber-500/50"
@@ -391,10 +408,11 @@ export default function App() {
                                 {seg.speaker}
                               </span>
                               <span className="font-mono text-[11px]">
-                                {seg.start}s - {seg.end}s
+                                {seg.start_time ?? seg.start}s -{" "}
+                                {seg.end_time ?? seg.end}s
                               </span>
                             </div>
-                            <p className="text-sm text-slate-300">{seg.text}</p>
+                            <p className="text-sm text-slate-300">{segText}</p>
                           </div>
                         );
                       })}
